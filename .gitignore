@@ -1,0 +1,20 @@
+# Godot
+.godot/
+*.translation
+export_credentials.cfg
+/android/
+
+# Builds and generated output
+/build/
+tests/screenshot/out/
+
+# Asset pipeline downloads (raw NASA data never goes into git)
+tools/assets/.cache/
+__pycache__/
+*.pyc
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+*.tmp

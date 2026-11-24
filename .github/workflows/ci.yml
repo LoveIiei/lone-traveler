@@ -1,0 +1,138 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  GODOT_VERSION: "4.7.2"
+  GODOT_RELEASE: "4.7.2-stable"
+
+jobs:
+  test:
+    name: Unit tests (headless)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Cache Godot editor
+        id: cache-godot
+        uses: actions/cache@v4
+        with:
+          path: ~/godot-bin
+          key: godot-editor-${{ env.GODOT_RELEASE }}
+
+      - name: Download Godot editor
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/godot-bin && cd ~/godot-bin
+          wget -q "https://github.com/godotengine/godot/releases/download/${GODOT_RELEASE}/Godot_v${GODOT_RELEASE}_linux.x86_64.zip"
+          unzip -q "Godot_v${GODOT_RELEASE}_linux.x86_64.zip" && rm *.zip
+          mv Godot_v* godot && chmod +x godot
+
+      - name: Run tests
+        run: GODOT=~/godot-bin/godot tools/test.sh
+
+  export:
+    name: Export ${{ matrix.name }}
+    needs: test
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            preset: "Windows Desktop"
+            mode: release
+            out: build/windows/LoneTraveler.exe
+            templates: "templates/version.txt templates/windows_release_x86_64.exe templates/windows_release_x86_64_console.exe"
+          - name: linux
+            preset: "Linux"
+            mode: release
+            out: build/linux/LoneTraveler.x86_64
+            templates: "templates/version.txt templates/linux_release.x86_64"
+          - name: web
+            preset: "Web"
+            mode: release
+            out: build/web/index.html
+            templates: "templates/version.txt templates/web_nothreads_release.zip"
+          - name: android
+            preset: "Android"
+            mode: debug   # release needs a signing key; added with the first public release
+            out: build/android/LoneTraveler.apk
+            templates: "templates/version.txt templates/android_debug.apk templates/android_release.apk"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Cache Godot editor
+        id: cache-godot
+        uses: actions/cache@v4
+        with:
+          path: ~/godot-bin
+          key: godot-editor-${{ env.GODOT_RELEASE }}
+
+      - name: Download Godot editor
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/godot-bin && cd ~/godot-bin
+          wget -q "https://github.com/godotengine/godot/releases/download/${GODOT_RELEASE}/Godot_v${GODOT_RELEASE}_linux.x86_64.zip"
+          unzip -q "Godot_v${GODOT_RELEASE}_linux.x86_64.zip" && rm *.zip
+          mv Godot_v* godot && chmod +x godot
+
+      - name: Cache export templates (${{ matrix.name }})
+        id: cache-templates
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/godot/export_templates
+          key: godot-templates-${{ env.GODOT_RELEASE }}-${{ matrix.name }}
+
+      - name: Download export templates (${{ matrix.name }} only)
+        if: steps.cache-templates.outputs.cache-hit != 'true'
+        run: |
+          cd "$RUNNER_TEMP"
+          wget -q "https://github.com/godotengine/godot/releases/download/${GODOT_RELEASE}/Godot_v${GODOT_RELEASE}_export_templates.tpz"
+          unzip -q "Godot_v${GODOT_RELEASE}_export_templates.tpz" ${{ matrix.templates }}
+          dest=~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
+          mkdir -p "$dest" && mv templates/* "$dest/"
+          ls -la "$dest"
+
+      - name: Set up Java 17 (Android)
+        if: matrix.name == 'android'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Android debug keystore
+        if: matrix.name == 'android'
+        run: |
+          keytool -genkeypair -v -keystore "$RUNNER_TEMP/debug.keystore" -storepass android \
+            -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+          echo "GODOT_ANDROID_KEYSTORE_DEBUG_PATH=$RUNNER_TEMP/debug.keystore" >> "$GITHUB_ENV"
+          echo "GODOT_ANDROID_KEYSTORE_DEBUG_USER=androiddebugkey" >> "$GITHUB_ENV"
+          echo "GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD=android" >> "$GITHUB_ENV"
+          # Godot reads the SDK location from its editor settings, which default to $ANDROID_HOME.
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+
+      - name: Import project
+        run: ~/godot-bin/godot --headless --path . --import
+
+      - name: Export ${{ matrix.preset }}
+        run: |
+          mkdir -p "$(dirname '${{ matrix.out }}')"
+          ~/godot-bin/godot --headless --path . --export-${{ matrix.mode }} "${{ matrix.preset }}" "${{ matrix.out }}" 2>&1 | tee export.log
+          test -s "${{ matrix.out }}"
+          ! grep -E "^ERROR" export.log
+
+      - name: Upload ${{ matrix.name }} build
+        uses: actions/upload-artifact@v4
+        with:
+          name: lone-traveler-${{ matrix.name }}
+          path: build/${{ matrix.name }}/
+          if-no-files-found: error
